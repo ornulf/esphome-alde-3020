@@ -81,11 +81,20 @@ bool Alde3030Component::begin_change_() {
     return false;
   }
   if (!pending_) {
-    desired_zone1_      = zone1_setpoint_;
-    desired_gas_        = gas_active_;
-    desired_elec_kw_    = electric_kw_;
+    if (panel_on_ || !have_on_state_) {
+      desired_zone1_      = zone1_setpoint_;
+      desired_gas_        = gas_active_;
+      desired_elec_kw_    = electric_kw_;
+      desired_water_mode_ = water_mode_;
+    } else {
+      // Panel is off: its report does not show the real settings, so use the
+      // settings saved from the last time the panel was on.
+      desired_zone1_      = on_zone1_;
+      desired_gas_        = on_gas_;
+      desired_elec_kw_    = on_elec_kw_;
+      desired_water_mode_ = on_water_mode_;
+    }
     desired_panel_      = panel_on_;
-    desired_water_mode_ = water_mode_;
     pending_since_ms_   = millis();
   }
   pending_ = true;
@@ -135,6 +144,7 @@ void Alde3030Component::request_info_frame_() {
 }
 
 bool Alde3030Component::report_matches_desired_() {
+  if (!desired_panel_) return !panel_on_;  // when switching off, only the on/off bit counts
   return fabsf(zone1_setpoint_ - desired_zone1_) < 0.25f && gas_active_ == desired_gas_ &&
          electric_kw_ == desired_elec_kw_ && panel_on_ == desired_panel_ &&
          water_mode_ == desired_water_mode_;
@@ -170,6 +180,15 @@ void Alde3030Component::parse_info_frame_(const uint8_t *d) {
   }
   first_info_received_ = true;
   last_info_ms_ = millis();
+
+  // Remember the real settings while the panel is on and nothing is pending
+  if (panel_on_ && !pending_ && !panel_busy_) {
+    on_zone1_ = zone1_setpoint_;
+    on_gas_ = gas_active_;
+    on_elec_kw_ = electric_kw_;
+    on_water_mode_ = water_mode_;
+    have_on_state_ = true;
+  }
 
   // A command is repeated until the panel reports the new values
   if (pending_) {

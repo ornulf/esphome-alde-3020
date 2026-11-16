@@ -79,6 +79,12 @@ class Alde3030Component : public Component, public uart::UARTDevice {
   uint8_t  desired_elec_kw_{0};
   bool     desired_panel_{true};
   uint8_t  desired_water_mode_{0};
+  // Settings last seen while the panel was on
+  bool     have_on_state_{false};
+  float    on_zone1_{20.0f};
+  bool     on_gas_{false};
+  uint8_t  on_elec_kw_{0};
+  uint8_t  on_water_mode_{0};
   bool     pending_{false};
   uint8_t  attempts_{0};
   static const uint8_t MAX_ATTEMPTS = 12;
