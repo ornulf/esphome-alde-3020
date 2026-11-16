@@ -87,6 +87,10 @@ class Alde3030Component : public Component, public uart::UARTDevice {
 
   // ── Last info frame ──────────────────────────────────────────────────
   uint8_t  last_info_[8]{};
+  uint8_t  published_info_[6]{};
+  bool     force_publish_{true};
+  uint32_t last_publish_ms_{0};
+  static const uint32_t HEARTBEAT_MS = 300000;
   uint8_t  raw_b4_{0x00};
   uint8_t  raw_b5_{0x00};
   bool     first_info_received_{false};

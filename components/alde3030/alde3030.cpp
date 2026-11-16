@@ -177,13 +177,23 @@ void Alde3030Component::parse_info_frame_(const uint8_t *d) {
     if (report_matches_desired_()) {
       ESP_LOGI(TAG, "Command confirmed by panel after %u attempt(s)", attempts_);
       pending_ = false;
+      force_publish_ = true;
     } else if (attempts_ >= MAX_ATTEMPTS) {
       ESP_LOGW(TAG, "Command NOT confirmed after %u attempts - giving up", attempts_);
       pending_ = false;
+      force_publish_ = true;  // show the real panel state in HA again
     } else {
       return;  // keep the requested value in HA while we retry
     }
   }
+
+  // Only publish to HA when something changed (or after a command / every 5 min)
+  uint32_t now = millis();
+  bool changed = memcmp(published_info_, d, 6) != 0;
+  if (!changed && !force_publish_ && (now - last_publish_ms_) < HEARTBEAT_MS) return;
+  memcpy(published_info_, d, 6);
+  force_publish_ = false;
+  last_publish_ms_ = now;
 
   ESP_LOGD(TAG, "Room=%.1f set=%.1f Out=%.1f Gas=%s Elec=%ukW Panel=%s Water=%u Pump=%s Err=%s [%02X %02X %02X]",
            zone1_actual_, zone1_setpoint_, outdoor_actual_, gas_active_ ? "on" : "off",
