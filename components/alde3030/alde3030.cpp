@@ -3,6 +3,7 @@
 #include "esphome/core/helpers.h"
 #include <cstring>
 #include <cstdio>
+#include <cmath>
 #ifdef USE_ESP32
 #include "esphome/components/uart/uart_component_esp_idf.h"
 #endif
@@ -88,6 +89,8 @@ bool Alde3030Component::begin_change_() {
     pending_since_ms_   = millis();
   }
   pending_ = true;
+  attempts_ = 0;
+  pending_since_ms_ = millis();
   return true;
 }
 
@@ -104,7 +107,7 @@ void Alde3030Component::send_control_frame_() {
 
   data[4] = (raw_b4_ & 0x3F) | ((desired_elec_kw_ & 0x03) << 6);
 
-  data[5] = raw_b5_ & 0b11100110;  // keep read-only flags, clear panel + water bits
+  data[5] = raw_b5_ & 0b11100100;  // keep read-only flags, clear panel, busy and water bits
   if (desired_panel_) data[5] |= (1 << 0);
   data[5] |= ((desired_water_mode_ & 0x03) << 3);
 
@@ -129,6 +132,12 @@ void Alde3030Component::request_info_frame_() {
   rx_pos_ = 0;
   rx_active_ = true;
   rx_start_ms_ = millis();
+}
+
+bool Alde3030Component::report_matches_desired_() {
+  return fabsf(zone1_setpoint_ - desired_zone1_) < 0.25f && gas_active_ == desired_gas_ &&
+         electric_kw_ == desired_elec_kw_ && panel_on_ == desired_panel_ &&
+         water_mode_ == desired_water_mode_;
 }
 
 void Alde3030Component::parse_info_frame_(const uint8_t *d) {
@@ -161,6 +170,20 @@ void Alde3030Component::parse_info_frame_(const uint8_t *d) {
   }
   first_info_received_ = true;
   last_info_ms_ = millis();
+
+  // A command is repeated until the panel reports the new values
+  if (pending_) {
+    if (attempts_ == 0) return;  // still waiting for panel to become ready
+    if (report_matches_desired_()) {
+      ESP_LOGI(TAG, "Command confirmed by panel after %u attempt(s)", attempts_);
+      pending_ = false;
+    } else if (attempts_ >= MAX_ATTEMPTS) {
+      ESP_LOGW(TAG, "Command NOT confirmed after %u attempts - giving up", attempts_);
+      pending_ = false;
+    } else {
+      return;  // keep the requested value in HA while we retry
+    }
+  }
 
   ESP_LOGD(TAG, "Room=%.1f set=%.1f Out=%.1f Gas=%s Elec=%ukW Panel=%s Water=%u Pump=%s Err=%s [%02X %02X %02X]",
            zone1_actual_, zone1_setpoint_, outdoor_actual_, gas_active_ ? "on" : "off",
@@ -244,11 +267,18 @@ void Alde3030Component::loop() {
 
   // Send a control frame only when something was changed from HA
   if (pending_ && first_info_received_) {
-    send_control_frame_();
-    pending_ = false;
-    delay(10);
-  } else if (pending_ && now - pending_since_ms_ > 5000) {
-    pending_ = false;
+    if (panel_busy_ && now - pending_since_ms_ < 60000) {
+      // The panel ignores commands while busy (about 30 s after every change).
+      static uint32_t last_busy_log = 0;
+      if (now - last_busy_log > 5000) {
+        ESP_LOGI(TAG, "Panel busy - command waiting");
+        last_busy_log = now;
+      }
+    } else {
+      send_control_frame_();
+      attempts_++;
+      delay(10);
+    }
   }
 
   request_info_frame_();

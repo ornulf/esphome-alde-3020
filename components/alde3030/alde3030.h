@@ -80,6 +80,9 @@ class Alde3030Component : public Component, public uart::UARTDevice {
   bool     desired_panel_{true};
   uint8_t  desired_water_mode_{0};
   bool     pending_{false};
+  uint8_t  attempts_{0};
+  static const uint8_t MAX_ATTEMPTS = 12;
+  bool     report_matches_desired_();
   uint32_t pending_since_ms_{0};
 
   // ── Last info frame ──────────────────────────────────────────────────
