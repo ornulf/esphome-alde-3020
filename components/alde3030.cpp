@@ -90,6 +90,7 @@ bool Alde3030Component::begin_change_() {
   }
   pending_ = true;
   attempts_ = 0;
+  pending_since_ms_ = millis();
   return true;
 }
 
@@ -106,7 +107,7 @@ void Alde3030Component::send_control_frame_() {
 
   data[4] = (raw_b4_ & 0x3F) | ((desired_elec_kw_ & 0x03) << 6);
 
-  data[5] = raw_b5_ & 0b11100110;  // keep read-only flags, clear panel + water bits
+  data[5] = raw_b5_ & 0b11100100;  // keep read-only flags, clear panel, busy and water bits
   if (desired_panel_) data[5] |= (1 << 0);
   data[5] |= ((desired_water_mode_ & 0x03) << 3);
 
@@ -171,7 +172,8 @@ void Alde3030Component::parse_info_frame_(const uint8_t *d) {
   last_info_ms_ = millis();
 
   // A command is repeated until the panel reports the new values
-  if (pending_ && attempts_ > 0) {
+  if (pending_) {
+    if (attempts_ == 0) return;  // still waiting for panel to become ready
     if (report_matches_desired_()) {
       ESP_LOGI(TAG, "Command confirmed by panel after %u attempt(s)", attempts_);
       pending_ = false;
@@ -265,9 +267,18 @@ void Alde3030Component::loop() {
 
   // Send a control frame only when something was changed from HA
   if (pending_ && first_info_received_) {
-    send_control_frame_();
-    attempts_++;
-    delay(10);
+    if (panel_busy_ && now - pending_since_ms_ < 60000) {
+      // The panel ignores commands while busy (about 30 s after every change).
+      static uint32_t last_busy_log = 0;
+      if (now - last_busy_log > 5000) {
+        ESP_LOGI(TAG, "Panel busy - command waiting");
+        last_busy_log = now;
+      }
+    } else {
+      send_control_frame_();
+      attempts_++;
+      delay(10);
+    }
   }
 
   request_info_frame_();
