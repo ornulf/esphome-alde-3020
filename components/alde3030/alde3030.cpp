@@ -182,7 +182,7 @@ void Alde3030Component::parse_info_frame_(const uint8_t *d) {
   last_info_ms_ = millis();
 
   // Remember the real settings while the panel is on and nothing is pending
-  if (panel_on_ && !pending_ && !panel_busy_) {
+  if (panel_on_ && !pending_) {
     on_zone1_ = zone1_setpoint_;
     on_gas_ = gas_active_;
     on_elec_kw_ = electric_kw_;
@@ -244,14 +244,15 @@ void Alde3030Component::loop() {
     bool classic = false;
     uint8_t offset = 0;
     if (rx_pos_ >= 9) {
-      for (uint8_t off = 0; off <= rx_pos_ - 9; off++) {
+      // The response is at the end of the buffer (after the echoed header).
+      // Search from the end and accept only the enhanced checksum (LIN 2.x),
+      // so stray bytes can never be mistaken for a frame.
+      for (int off = rx_pos_ - 9; off >= 0; off--) {
         const uint8_t *c = &rx_buf_[off];
-        bool enh = (c[8] == lin_checksum_(pid, c, 8, true));
-        bool cla = (c[8] == lin_checksum_(pid, c, 8, false));
-        if (enh || cla) {
+        if (c[8] == lin_checksum_(pid, c, 8, true)) {
           found = true;
-          classic = cla && !enh;
-          offset = off;
+          classic = false;
+          offset = (uint8_t) off;
           break;
         }
       }
