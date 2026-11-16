@@ -1,5 +1,13 @@
 #pragma once
 
+// Alde CI-bus (LIN 19200, ESP = master) – SAFE version for Alde Compact 3020.
+// Based on holdestmade/esphome-alde-3020 (alde3030) and daviddootson/alde_3030_plus.
+// Safety changes:
+//  * Control frames are ONLY sent when something is changed from Home Assistant.
+//  * A control frame is always built from the last state read from the panel
+//    (read-modify-write), so nothing else is touched.
+//  * Nothing is sent until a valid info frame has been received.
+
 #include "esphome/core/component.h"
 #include "esphome/core/log.h"
 #include "esphome/components/uart/uart.h"
@@ -11,22 +19,12 @@ namespace alde3030 {
 
 static const char *const TAG = "alde3030";
 
-// ── LIN Frame IDs ──────────────────────────────────────────────────────────
-// These are the 6-bit IDs; PIDs (with parity) are computed in lin_pid_().
-// ID_CONTROL 0x1A → PID 0x9A
-// ID_INFO    0x1B → PID 0x5B   (heater responds with 8 data bytes + checksum)
-// ID_DIAG    0x3C → PID 0x3C   (master writes diagnostic/init payload)
 static const uint8_t LIN_ID_CONTROL = 0x1A;
 static const uint8_t LIN_ID_INFO    = 0x1B;
 static const uint8_t LIN_ID_DIAG    = 0x3C;
 
-// Diagnostic init payload sent once on setup to wake the 3030 Plus bus.
-// Reverse-engineered from daviddootson/alde_3030_plus.
-static const uint8_t DIAG_PAYLOAD[8] = {0x10, 0x06, 0xB2, 0x00, 0xDE, 0x41, 0x03, 0x00};
-
-// ── Temperature helpers ────────────────────────────────────────────────────
-// Info frame decode:    T = (raw × 0.5) - 42.0   (raw 0x00–0xFA = -42..83°C)
-// Control frame encode: raw = (T - 5.0) / 0.5    (setpoint range 5–30°C → 0x00–0x32)
+// Read-by-identifier "hello": NAD 0x10, supplier 0x41DE (Alde), function 0x0001 (Compact 3020)
+static const uint8_t DIAG_PAYLOAD[8] = {0x10, 0x06, 0xB2, 0x00, 0xDE, 0x41, 0x01, 0x00};
 
 class Alde3030Component : public Component, public uart::UARTDevice {
  public:
@@ -38,9 +36,9 @@ class Alde3030Component : public Component, public uart::UARTDevice {
   // ── Setters (called by sub-components) ───────────────────────────────
   void set_zone1_target(float temp_c);
   void set_gas_enabled(bool on);
-  void set_electric_power(uint8_t kw);   // 0=Off  1=1kW  2=2kW  3=3kW
+  void set_electric_power(uint8_t kw);   // 0=Off 1=1kW 2=2kW 3=3kW
   void set_panel_on(bool on);
-  void set_water_mode(uint8_t mode);     // 0=Off  1=On  2=Boost
+  void set_water_mode(uint8_t mode);     // 0=Off 1=On 2=Boost
 
   // ── Getters (latest parsed info frame) ───────────────────────────────
   float   get_zone1_actual()   const { return zone1_actual_; }
@@ -48,20 +46,20 @@ class Alde3030Component : public Component, public uart::UARTDevice {
   float   get_zone1_setpoint() const { return zone1_setpoint_; }
   bool    get_gas_active()     const { return gas_active_; }
   bool    get_gas_valve_open() const { return gas_valve_open_; }
-  uint8_t get_electric_kw()   const { return electric_kw_; }
+  uint8_t get_electric_kw()    const { return electric_kw_; }
   bool    get_panel_on()       const { return panel_on_; }
   bool    get_panel_busy()     const { return panel_busy_; }
   bool    get_error_present()  const { return error_present_; }
-  uint8_t get_water_mode()    const { return water_mode_; }
+  uint8_t get_water_mode()     const { return water_mode_; }
   bool    get_ac_available()   const { return ac_available_; }
   bool    get_pump_running()   const { return pump_running_; }
+  uint8_t get_raw_byte(uint8_t i) const { return i < 8 ? last_info_[i] : 0; }
 
   void add_on_state_callback(std::function<void()> cb) {
     on_state_callbacks_.push_back(std::move(cb));
   }
 
  protected:
-  // ── LIN bus helpers ──────────────────────────────────────────────────
   void    send_lin_break_();
   void    send_lin_header_(uint8_t lin_id);
   uint8_t lin_pid_(uint8_t id);
@@ -70,30 +68,32 @@ class Alde3030Component : public Component, public uart::UARTDevice {
   void    send_control_frame_();
   void    request_info_frame_();
   void    parse_info_frame_(const uint8_t *data);
+  bool    begin_change_();   // prepares desired_* from last report
 
   float   decode_temp_(uint8_t raw);
   uint8_t encode_setpoint_(float temp_c);
 
-  // ── Desired state (written to heater) ────────────────────────────────
-  float    desired_zone1_{19.0f};
+  // ── Desired state (only used when a change is pending) ───────────────
+  float    desired_zone1_{20.0f};
   bool     desired_gas_{false};
   uint8_t  desired_elec_kw_{0};
   bool     desired_panel_{true};
   uint8_t  desired_water_mode_{0};
+  bool     pending_{false};
+  uint32_t pending_since_ms_{0};
 
-  // ── Raw bytes from last info frame (used for read-modify-write) ──────
-  // Byte 4 low 6 bits may encode zone-2 setpoint or other heater state;
-  // we preserve them rather than overwrite to avoid side-effects.
+  // ── Last info frame ──────────────────────────────────────────────────
+  uint8_t  last_info_[8]{};
   uint8_t  raw_b4_{0x00};
-  // Byte 5 contains several read-only status flags (panel_busy, error,
-  // ac_available, pump_running) that must be echoed back unchanged.
   uint8_t  raw_b5_{0x00};
   bool     first_info_received_{false};
+  uint32_t last_info_ms_{0};
+  uint32_t last_diag_ms_{0};
 
-  // ── Reported state (read from heater) ────────────────────────────────
-  float    zone1_actual_{0.0f};
-  float    outdoor_actual_{0.0f};
-  float    zone1_setpoint_{0.0f};
+  // ── Reported state ───────────────────────────────────────────────────
+  float    zone1_actual_{NAN};
+  float    outdoor_actual_{NAN};
+  float    zone1_setpoint_{NAN};
   bool     gas_active_{false};
   bool     gas_valve_open_{false};
   uint8_t  electric_kw_{0};
@@ -103,7 +103,7 @@ class Alde3030Component : public Component, public uart::UARTDevice {
   uint8_t  water_mode_{0};
   bool     ac_available_{false};
   bool     pump_running_{false};
-  bool     use_classic_checksum_{false};  // 3030 Plus uses enhanced by default
+  bool     use_classic_checksum_{false};
 
   // ── Timing ───────────────────────────────────────────────────────────
   uint32_t last_send_ms_{0};
@@ -115,7 +115,8 @@ class Alde3030Component : public Component, public uart::UARTDevice {
   uint8_t  rx_pos_{0};
   bool     rx_active_{false};
   uint32_t rx_start_ms_{0};
-  static const uint32_t RX_TIMEOUT_MS = 150;  // 3030 Plus needs slightly longer window
+  static const uint32_t RX_TIMEOUT_MS = 150;
+  uint32_t timeouts_{0};
 
   std::vector<std::function<void()>> on_state_callbacks_;
 };
